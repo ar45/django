@@ -125,7 +125,10 @@ class BaseDatabaseWrapper(object):
         if self.connection is None:
             with self.wrap_database_errors:
                 self.connect()
-
+        # If the connection exists but is not connected (i.e. timed out) reconnect
+        elif not self.connection.is_connected():
+            with self.wrap_database_errors:
+                self.connect()
     ##### Backend-specific wrappers for PEP-249 connection methods #####
 
     def _cursor(self):
