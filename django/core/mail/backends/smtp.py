@@ -44,11 +44,15 @@ class EmailBackend(BaseEmailBackend):
         try:
             # If local_hostname is not specified, socket.getfqdn() gets used.
             # For performance, we use the cached FQDN for local_hostname.
-            self.connection = smtplib.SMTP(self.host, self.port,
+            if self.use_tls:
+                # Some servers require SSL from the begining. (eg. gmail, godaddy)
+                # see https://docs.python.org/2/library/smtplib.html#smtplib.SMTP_SSL
+                self.connection = smtplib.SMTP_SSL(self.host, self.port,
+                                           local_hostname=DNS_NAME.get_fqdn())
+            else:
+                self.connection = smtplib.SMTP(self.host, self.port,
                                            local_hostname=DNS_NAME.get_fqdn())
             if self.use_tls:
-                self.connection.ehlo()
-                self.connection.starttls()
                 self.connection.ehlo()
             if self.username and self.password:
                 self.connection.login(self.username, self.password)
