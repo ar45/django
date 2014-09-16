@@ -7,12 +7,25 @@ from django.conf import settings
 from django.db.utils import load_backend
 from django.utils.encoding import force_bytes
 from django.utils.six.moves import input
+from django.db.models.fields import NOT_PROVIDED
 
 from .util import truncate_name
 
 # The prefix to put on the default database name when creating
 # the test database.
 TEST_DATABASE_PREFIX = 'test_'
+
+
+def escapechars(raw_str):
+    "Escapes problematic characters from SQL in a backend-specific way"
+    if isinstance(raw_str, int):
+        return int(raw_str)
+    working_str = str(raw_str)
+    rawchars = ['\\', '"', "'"]
+    cookedchars = ['\\\\', '\\"', "\\'"]
+    for i in range(0, len(rawchars)):
+        working_str = working_str.replace(rawchars[i], cookedchars[i])
+        return working_str
 
 
 class BaseDatabaseCreation(object):
@@ -67,6 +80,13 @@ class BaseDatabaseCreation(object):
                 null = True
             if not null:
                 field_output.append(style.SQL_KEYWORD('NOT NULL'))
+            if f.default != NOT_PROVIDED and not callable(f.default):
+                try:
+                    escaped_string = 'NULL' if f.default is None else "'%s'" % escapechars(f.default)
+                    field_output.append(style.SQL_KEYWORD("DEFAULT %s" % (escaped_string,)))
+                except NotImplementedError:
+                    pass
+
             if f.primary_key:
                 field_output.append(style.SQL_KEYWORD('PRIMARY KEY'))
             elif f.unique:
