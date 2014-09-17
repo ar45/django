@@ -16,6 +16,9 @@ class Command(NoArgsCommand):
     option_list = NoArgsCommand.option_list + (
         make_option('--noinput', action='store_false', dest='interactive', default=True,
             help='Tells Django to NOT prompt the user for input of any kind.'),
+        make_option('--all', action='store_true', dest='all', default=False,
+            help='Generate sql for all tables, '
+                 'by default it generates only for tables that are not yet in the database.'),
         make_option('--outfile', action='store', dest='write_to',
             help='The file name / location to output the sql.'),
         make_option('--database', action='store', dest='database',
@@ -29,6 +32,7 @@ class Command(NoArgsCommand):
         verbosity = int(options.get('verbosity'))
         interactive = options.get('interactive')
         show_traceback = options.get('traceback')
+        all = options.get('all')
         write_to = options.get('write_to')
 
         if not write_to:
@@ -79,7 +83,7 @@ class Command(NoArgsCommand):
                 (opts.auto_created and converter(opts.auto_created._meta.db_table) in tables))
 
         manifest = SortedDict(
-            (app_name, list(filter(model_installed, model_list)))
+            (app_name, list(m for m in model_list if all or model_installed(m)))
             for app_name, model_list in all_models
         )
 
@@ -88,7 +92,7 @@ class Command(NoArgsCommand):
 
             # Create the tables for each model
             if verbosity >= 1:
-                self.stdout.write("Creating tables ...\n")
+                self.stdout.write("Generating tables ...\n")
 
             for app_name, model_list in manifest.items():
                 for model in model_list:
@@ -121,11 +125,10 @@ class Command(NoArgsCommand):
                             if verbosity >= 2:
                                 self.stdout.write("Adding custom SQL for %s.%s model\n" % (app_name, model._meta.object_name))
                             try:
-                                with transaction.commit_on_success_unless_managed(using=db):
-                                    for sql in custom_sql:
-                                        outfile.write("%s\n" % sql)
+                                for sql in custom_sql:
+                                    outfile.write("%s\n" % sql)
                             except Exception as e:
-                                self.stderr.write("Failed to install custom SQL for %s.%s model: %s\n" % \
+                                self.stderr.write("Failed to process custom SQL for %s.%s model: %s\n" % \
                                                     (app_name, model._meta.object_name, e))
                                 if show_traceback:
                                     traceback.print_exc()
@@ -144,9 +147,8 @@ class Command(NoArgsCommand):
                             if verbosity >= 2:
                                 self.stdout.write("Processing index for %s.%s model\n" % (app_name, model._meta.object_name))
                             try:
-                                with transaction.commit_on_success_unless_managed(using=db):
-                                    for sql in index_sql:
-                                        outfile.write("%s\n" % sql)
+                                for sql in index_sql:
+                                    outfile.write("%s\n" % sql)
                             except Exception as e:
-                                self.stderr.write("Failed to install index for %s.%s model: %s\n" % \
+                                self.stderr.write("Failed to process index for %s.%s model: %s\n" % \
                                                     (app_name, model._meta.object_name, e))
