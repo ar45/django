@@ -30,6 +30,24 @@ class BaseDatabaseOperations(object):
         'PositiveIntegerField': (0, 2147483647),
     }
 
+    # Mapping of datatypes length specifiers
+    # in the form of `{'type': ((specN, val), (specN, val))}`
+    data_type_length_specifiers = {
+        'varchar': (('max_length', None),),
+        'numeric': (('max_digits', None), ('decimal_places', None),),
+    }
+
+    def data_type_length_spec(self, data_type, data):
+        length_specs = [data.get(spec[0]) or spec[1] for spec in
+                        self.data_type_length_specifiers.get(data_type, [])]
+        try:
+            data_type_spec = ', '.join([six.text_type(spec) for spec in length_specs if spec is not None])
+            if data_type_spec:
+                return '(%s)' % data_type_spec
+        except KeyError:
+            pass
+        return ''
+
     def __init__(self, connection):
         self.connection = connection
         self._cache = None

@@ -26,6 +26,11 @@ class DatabaseOperations(BaseDatabaseOperations):
         'PositiveIntegerField': (0, 99999999999),
     }
 
+    data_type_length_specifiers = {
+        'NVARCHAR2': (('max_length', 4000),),
+        'NUMBER': (('max_digits', None), ('decimal_places', None),),
+    }
+
     # TODO: colorize this SQL code with style.SQL_KEYWORD(), etc.
     _sequence_reset_sql = """
 DECLARE

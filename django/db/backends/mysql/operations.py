@@ -17,6 +17,11 @@ class DatabaseOperations(BaseDatabaseOperations):
         PositiveIntegerField=(0, 18446744073709551615),
     )
 
+    data_type_length_specifiers = {
+        'varchar': (('max_length', 255),),
+        'numeric': (('max_digits', 65), ('decimal_places', 30),),
+    }
+
     def date_extract_sql(self, lookup_type, field_name):
         # http://dev.mysql.com/doc/mysql/en/date-and-time-functions.html
         if lookup_type == 'week_day':

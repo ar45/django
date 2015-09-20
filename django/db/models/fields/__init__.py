@@ -641,11 +641,20 @@ class Field(RegisterLookupMixin):
         # mapped to one of the built-in Django field types. In this case, you
         # can implement db_type() instead of get_internal_type() to specify
         # exactly which wacky database column type you want to use.
-        data = DictWrapper(self.__dict__, connection.ops.quote_name, "qn_")
+        return self._get_db_type(connection) + self._get_db_type_length_specs(connection)
+
+    def _get_db_type(self, connection):
+        return connection.data_types[self.get_internal_type()]
+
+    def _get_length_spec(self, connection, spec):
         try:
-            return connection.data_types[self.get_internal_type()] % data
+            return dict(connection.ops.data_type_length_specifiers[self._get_db_type(connection)])[spec]
         except KeyError:
-            return None
+            pass
+
+    def _get_db_type_length_specs(self, connection):
+        data = DictWrapper(self.__dict__, connection.ops.quote_name, "qn_")
+        return connection.ops.data_type_length_spec(self._get_db_type(connection), data)
 
     def db_parameters(self, connection):
         """
@@ -1087,11 +1096,17 @@ class BooleanField(Field):
 
 
 class CharField(Field):
-    description = _("String (up to %(max_length)s)")
+    description = _("Variable length String")
 
-    def __init__(self, *args, **kwargs):
-        super(CharField, self).__init__(*args, **kwargs)
-        self.validators.append(validators.MaxLengthValidator(self.max_length))
+    @cached_property
+    def validators(self):
+        # These validators can't be added at field initialization time since
+        # they're based on values retrieved from `connection`.
+        max_length_validators = []
+        max_length = self.max_length or self._get_length_spec(connection, 'max_length')
+        if max_length:
+            max_length_validators.append(validators.MaxLengthValidator(max_length))
+        return super(CharField, self).validators + max_length_validators
 
     def check(self, **kwargs):
         errors = super(CharField, self).check(**kwargs)
@@ -1099,16 +1114,8 @@ class CharField(Field):
         return errors
 
     def _check_max_length_attribute(self, **kwargs):
-        if self.max_length is None:
-            return [
-                checks.Error(
-                    "CharFields must define a 'max_length' attribute.",
-                    hint=None,
-                    obj=self,
-                    id='fields.E120',
-                )
-            ]
-        elif not isinstance(self.max_length, six.integer_types) or self.max_length <= 0:
+        if self.max_length is not None and (not isinstance(self.max_length, six.integer_types)
+                                            or self.max_length <= 0):
             return [
                 checks.Error(
                     "'max_length' must be a positive integer.",
