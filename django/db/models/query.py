@@ -769,6 +769,30 @@ class QuerySet(object):
         clone.query.set_empty()
         return clone
 
+    def prepare_child(self, *parents):
+        """
+        Creates and returns a new object with the given model instances as
+        parents.  The object is *not* saved to the database.
+        """
+        assert parents, \
+            "prepare_child() must be passed at least one parent instance"
+        attrs = self._child(*parents)
+        return self.model(**attrs)
+
+    def create_child(self, *parents, **kwargs):
+        """
+        Creates a new object with the given model instances as parents, updates
+        it with the given kwargs, saves it to the database, and returns the
+        created object.
+        """
+        assert parents, \
+            "create_child() must be passed at least one parent instance"
+        attrs = self._child(*parents)
+        attrs.update(kwargs)
+        obj = self.model(**attrs)
+        obj.save()
+        return obj
+
     ##################################################################
     # PUBLIC METHODS THAT ALTER ATTRIBUTES AND RETURN A NEW QUERYSET #
     ##################################################################
@@ -1164,6 +1188,22 @@ class QuerySet(object):
             return True
         return check_rel_lookup_compatibility(self.model, opts, field)
     is_compatible_query_object_type.queryset_only = True
+
+    def _child(self, *parents):
+        model_parents = tuple(self.model._meta.parents.keys())
+        if not model_parents:
+            raise ValueError("%r is not a child model; it has no parents"
+                             % self.model)
+        attrs = {}
+        for parent in parents:
+            if not isinstance(parent, model_parents):
+                raise ValueError("%r is not a parent instance of %r"
+                                 % (parent, self.model))
+            for field in parent._meta._get_fields(reverse=False, include_parents=True):
+                if field.attname not in attrs:
+                    attrs[field.attname] = getattr(parent, field.attname)
+            attrs[self.model._meta.parents[parent.__class__].name] = parent
+        return attrs
 
 
 class InstanceCheckMeta(type):
