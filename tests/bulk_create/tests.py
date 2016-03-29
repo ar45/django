@@ -12,6 +12,8 @@ from django.test import (
 from .models import (
     Country, NoFields, Pizzeria, ProxyCountry, ProxyMultiCountry,
     ProxyMultiProxyCountry, ProxyProxyCountry, Restaurant, State, TwoFields,
+    Parent, Child, MultiInheritanceWithNoAutoField, MultiInheritorWithAutoParent,
+    SiblingWithAutoField
 )
 
 
@@ -40,20 +42,39 @@ class BulkCreateTests(TestCase):
         with self.assertNumQueries(1):
             Country.objects.bulk_create(self.data)
 
-    def test_multi_table_inheritance_unsupported(self):
-        expected_message = "Can't bulk create a multi-table inherited model"
+    def test_multi_table_inheritance_with_no_auto_field(self):
+        records = MultiInheritanceWithNoAutoField.objects.bulk_create([
+            MultiInheritanceWithNoAutoField(child_field="Child 1", grand_child_field="Grand Child 1",
+                                            sibling_with_no_auto_field="sib 1"),
+            MultiInheritanceWithNoAutoField(id=999999, child_field="Child 2", grand_child_field="Grand Child 2",
+                                            sibling_with_no_auto_field="sib 2"),
+        ])
+
+        self.assertIsInstance(records[1].child_ptr, Child)
+        self.assertIsInstance(records[0].child_ptr.parent_ptr, Parent)
+        self.assertIsInstance(records[0].parent_ptr, Parent)
+        self.assertEqual(records[0].child_ptr.parent_ptr_id, records[0].pk)
+
+    @skipIfDBFeature('can_get_last_insert_id', 'can_return_ids_from_bulk_insert')
+    def test_multi_table_inheritance_with_auto_field_unsupported(self):
+        expected_message = (
+            "Can't bulk create a multi-table inherited model 'MultiInheritorWithAutoParent'"
+            " with an AutoField with your database backend")
         with self.assertRaisesMessage(ValueError, expected_message):
-            Pizzeria.objects.bulk_create([
-                Pizzeria(name="The Art of Pizza"),
+            MultiInheritorWithAutoParent.objects.bulk_create([
+                MultiInheritorWithAutoParent(child_field="Child 1", grand_child_field="Grand Child 1",
+                                             sibling_with_auto_field="sib"),
             ])
-        with self.assertRaisesMessage(ValueError, expected_message):
-            ProxyMultiCountry.objects.bulk_create([
-                ProxyMultiCountry(name="Fillory", iso_two_letter="FL"),
-            ])
-        with self.assertRaisesMessage(ValueError, expected_message):
-            ProxyMultiProxyCountry.objects.bulk_create([
-                ProxyMultiProxyCountry(name="Fillory", iso_two_letter="FL"),
-            ])
+
+    @skipUnlessDBFeature('can_return_ids_from_bulk_insert')
+    def test_multi_table_inheritance_with_auto_field_supported(self):
+        records = MultiInheritorWithAutoParent.objects.bulk_create([
+            MultiInheritorWithAutoParent(child_field="Child 1", grand_child_field="Grand Child 1",
+                                         sibling_with_auto_field="sib"),
+        ])
+
+        self.assertIsInstance(records[0].siblingwithautofield_ptr, SiblingWithAutoField)
+        self.assertIsInstance(records[0].child_ptr, Child)
 
     def test_proxy_inheritance_supported(self):
         ProxyCountry.objects.bulk_create([
