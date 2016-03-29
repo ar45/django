@@ -11,6 +11,7 @@ class DatabaseFeatures(BaseDatabaseFeatures):
     related_fields_match_type = True
     allow_sliced_subqueries = False
     has_bulk_insert = True
+    can_get_last_insert_id = True
     has_select_for_update = True
     has_select_for_update_nowait = False
     supports_forward_references = False

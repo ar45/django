@@ -399,6 +399,86 @@ class QuerySet(object):
             if obj.pk is None:
                 obj.pk = obj._meta.pk.get_pk_value_on_save(obj)
 
+    def _copy_inherited_field_values(self, obj, parent_obj):
+        for field in parent_obj._meta.concrete_fields:
+            setattr(obj, field.attname, getattr(parent_obj, field.attname))
+
+    def _can_bulk_insert_to_parents(self, connection):
+        return (connection.features.can_return_id_from_insert or
+                not any(model._meta.auto_field for model in self.model._meta.get_parent_list()))
+
+    def _handle_bulk_insert_parents(self, objs, batch_size, connection):
+        """Determine how we should handle bulk insert involving more than one table
+
+        bulk_insert with table_inheritance can work in two ways.
+        1) We do not yet have parent records, and we want to insert a parent record.
+            This can only be supported if our database supports returning insert_ids
+            to get back the IDs inserted in the parent tables, or the parent table does not have
+            auto primary keys.
+        2) We already have a parent record that exists and the link_ptr attribute set
+            In this case, we copy all the attributes from the parent record onto
+            the child objects and we proceed with the insert for our child instance.
+
+
+        :type objs: (django.db.models.Model, django.db.models.Model)
+        :type connection: django.db.backends.base.base.BaseDatabaseWrapper
+        Database
+
+        """
+        # Check that the parents share the same concrete model with the our
+        # model to detect the inheritance pattern ConcreteGrandParent ->
+        # MultiTableParent -> ProxyChild. Simply checking self.model._meta.proxy
+        # would not identify that case as involving multiple tables.
+        for parent in self.model._meta.concrete_model._meta.parents:
+            parent_link = self.model._meta.get_ancestor_link(parent)
+            link_cache_name = parent_link.get_cache_name()
+
+            # If we have a link to this parent already set, then we do not need to do any inserts
+            # to the parent table. Assuming the database enforces foreign key constraints this should fail
+            # if these are unsaved objects.
+            if getattr(objs[0], link_cache_name, None):
+                for obj in objs:
+                    parent_obj = getattr(obj, link_cache_name, None)
+                    if not parent_obj or parent_obj.pk is None:
+                        raise ValueError(
+                            "Cannot bulk insert combining objects with a parent record and without"
+                        )
+
+                    self._copy_inherited_field_values(obj, parent_obj)
+            else:
+                # We have no link, then we want to bulk insert to the parent table first
+                # Determine if the database backend can handle returning new insert id.
+                if not self._can_bulk_insert_to_parents(connection):
+                    raise ValueError(
+                        "Can't bulk create a multi-table inherited model '{}' "
+                        "with an AutoField with your database backend".format(self.model.__name__)
+                    )
+
+                parent_objs = [parent(**{field.attname: getattr(obj, field.attname)
+                                         for field in parent._meta.concrete_fields
+                                         })
+                               for obj in objs]
+
+                parent._base_manager.get_queryset()._bulk_create(parent_objs, batch_size, connection)
+
+                for obj, parent_obj in zip(objs, parent_objs):
+                    self._copy_inherited_field_values(obj, parent_obj)
+                    setattr(obj, parent_link.name, parent_obj)
+
+    def _bulk_create(self, objs, batch_size, connection):
+
+        self._handle_bulk_insert_parents(objs, batch_size, connection)
+
+        fields = self.model._meta.concrete_model._meta.local_concrete_fields
+        self._populate_pk_values(objs)
+
+        objs_with_pk, objs_without_pk = partition(lambda o: o.pk is None, objs)
+        if objs_with_pk:
+            self._batched_insert(objs_with_pk, fields, batch_size, True)
+        if objs_without_pk:
+            fields = [f for f in fields if not isinstance(f, AutoField)]
+            self._batched_insert(objs_without_pk, fields, batch_size, False)
+
     def bulk_create(self, objs, batch_size=None):
         """
         Inserts each of the instances into the database. This does *not* call
@@ -420,33 +500,15 @@ class QuerySet(object):
         # Oracle as well, but the semantics for  extracting the primary keys is
         # trickier so it's not done yet.
         assert batch_size is None or batch_size > 0
-        # Check that the parents share the same concrete model with the our
-        # model to detect the inheritance pattern ConcreteGrandParent ->
-        # MultiTableParent -> ProxyChild. Simply checking self.model._meta.proxy
-        # would not identify that case as involving multiple tables.
-        for parent in self.model._meta.get_parent_list():
-            if parent._meta.concrete_model is not self.model._meta.concrete_model:
-                raise ValueError("Can't bulk create a multi-table inherited model")
+
         if not objs:
             return objs
+
+        objs = list(objs)
         self._for_write = True
         connection = connections[self.db]
-        fields = self.model._meta.concrete_fields
-        objs = list(objs)
-        self._populate_pk_values(objs)
         with transaction.atomic(using=self.db, savepoint=False):
-            objs_with_pk, objs_without_pk = partition(lambda o: o.pk is None, objs)
-            if objs_with_pk:
-                self._batched_insert(objs_with_pk, fields, batch_size)
-            if objs_without_pk:
-                fields = [f for f in fields if not isinstance(f, AutoField)]
-                ids = self._batched_insert(objs_without_pk, fields, batch_size)
-                if connection.features.can_return_ids_from_bulk_insert:
-                    assert len(ids) == len(objs_without_pk)
-                for obj_without_pk, pk in zip(objs_without_pk, ids):
-                    obj_without_pk.pk = pk
-                    obj_without_pk._state.adding = False
-                    obj_without_pk._state.db = self.db
+            self._bulk_create(objs, batch_size, connection)
 
         return objs
 
@@ -1077,7 +1139,7 @@ class QuerySet(object):
     _insert.alters_data = True
     _insert.queryset_only = False
 
-    def _batched_insert(self, objs, fields, batch_size):
+    def _batched_insert(self, objs, fields, batch_size, has_pk):
         """
         A little helper method for bulk_insert to insert the bulk one batch
         at a time. Inserts recursively a batch from the front of the bulk and
@@ -1087,17 +1149,43 @@ class QuerySet(object):
             return
         ops = connections[self.db].ops
         batch_size = (batch_size or max(ops.bulk_batch_size(fields, objs), 1))
-        inserted_ids = []
-        for item in [objs[i:i + batch_size] for i in range(0, len(objs), batch_size)]:
-            if connections[self.db].features.can_return_ids_from_bulk_insert:
-                inserted_id = self._insert(item, fields=fields, using=self.db, return_id=True)
-                if isinstance(inserted_id, list):
-                    inserted_ids.extend(inserted_id)
-                else:
-                    inserted_ids.append(inserted_id)
+
+        features = connections[self.db].features
+        return_id = (features.can_get_last_insert_id and self.model._meta.auto_field or
+                     features.can_return_ids_from_bulk_insert)
+
+        for batch in [objs[i:i + batch_size] for i in range(0, len(objs), batch_size)]:
+            inserted_id = self._insert(batch, fields=fields, using=self.db, return_id=return_id)
+            if return_id and has_pk is False:
+                self._apply_id_from_bulk_insert(batch, inserted_id)
+
+    def _set_inserted_objs_pk(self, objs, ids):
+        for obj, pk in zip(objs, ids):
+            obj.pk = pk
+            obj._state.adding = False
+            obj._state.db = self.db
+
+    def _apply_id_from_bulk_insert(self, objs, ids):
+        if not ids:
+            return
+
+        features = connections[self.db].features
+        if features.can_return_ids_from_bulk_insert:
+            if isinstance(ids, int):
+                assert len(objs) == 1
+                self._set_inserted_objs_pk(objs, [ids])
             else:
-                self._insert(item, fields=fields, using=self.db)
-        return inserted_ids
+                assert len(objs) == len(ids)
+                self._set_inserted_objs_pk(objs, ids)
+
+        elif features.can_get_last_insert_id:
+            assert isinstance(ids, int)
+            # In MySQL when inserting multiple rows the `last_insert_id`
+            # returns the first id of those records, so it is generally safe to assume
+            # the id of a record is last_insert_id - objs.index(obj)
+            ids = range(ids, len(objs) + ids)
+            assert len(ids) == len(objs)
+            self._set_inserted_objs_pk(objs, ids)
 
     def _clone(self, **kwargs):
         query = self.query.clone()

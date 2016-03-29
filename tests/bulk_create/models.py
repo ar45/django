@@ -51,3 +51,37 @@ class TwoFields(models.Model):
 
 class NoFields(models.Model):
     pass
+
+
+class Parent(models.Model):
+    id = models.IntegerField(primary_key=True, default=lambda: models.IntegerField.creation_counter)
+
+
+class Child(Parent):
+    child_field = models.CharField(max_length=50)
+
+
+class GrandChild(Child):
+    grand_child_field = models.CharField(max_length=50)
+
+
+class ProxyGrandChild(GrandChild):
+    class Meta:
+        proxy = True
+
+
+class SiblingWithAutoField(models.Model):
+    my_pk = models.AutoField(primary_key=True)
+    sibling_with_auto_field = models.CharField(max_length=50)
+
+
+class SiblingWithNoAutoField(models.Model):
+    sibling_with_no_auto_field = models.CharField(max_length=50, primary_key=True)
+
+
+class MultiInheritanceWithNoAutoField(ProxyGrandChild, SiblingWithNoAutoField):
+    pass
+
+
+class MultiInheritorWithAutoParent(SiblingWithAutoField, ProxyGrandChild):
+    pass
