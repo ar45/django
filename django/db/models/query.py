@@ -1135,13 +1135,13 @@ class QuerySet(object):
 
         features = connections[self.db].features
         if features.can_return_ids_from_bulk_insert:
-            if isinstance(ids, int):
-                assert len(objs) == 1
-                objs[0].pk = ids
-            else:
+            if isinstance(ids, (list, tuple)):
                 assert len(objs) == len(ids)
                 for j in range(len(objs)):
                     objs[j].pk = ids[j]
+            else:
+                assert len(objs) == 1
+                objs[0].pk = ids
 
         elif features.can_get_last_insert_id:
             assert isinstance(ids, int)
